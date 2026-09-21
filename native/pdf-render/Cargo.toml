@@ -1,0 +1,18 @@
+[package]
+name = "pdf-render"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI shim around pdfium-render for rendering PDF pages to PNG, consumed from Java via the FFM API"
+
+[lib]
+name = "pdf_render"
+crate-type = ["cdylib"]
+
+[dependencies]
+pdfium-render = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

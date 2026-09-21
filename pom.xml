@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.1</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>25</java.version>
+        <!-- Rust crate that wraps pdfium; built by cargo during generate-resources. -->
+        <native.crate.dir>${project.basedir}/native/pdf-render</native.crate.dir>
+        <native.output.dir>${native.crate.dir}/target/release</native.output.dir>
+        <!-- Overridden per OS/arch by the profiles below; must match NativeLibraryLoader.platform(). -->
+        <native.platform>unknown</native.platform>
+        <!-- Directory holding libpdfium, populated by fetch-pdfium.sh; bundled into the jar when present. -->
+        <pdfium.library.dir>${native.crate.dir}/lib/${native.platform}</pdfium.library.dir>
+        <!-- Set -DskipNative to reuse an existing cargo build. -->
+        <skipNative>false</skipNative>
+        <!--
+          Number of independent native library copies bundled into the jar. pdfium is
+          single-threaded, so each copy provides one unit of PDF rendering concurrency.
+          Override with -Dpdf.render.slots=N. Each slot adds ~9 MB to the jar.
+        -->
+        <pdf.render.slots>6</pdf.render.slots>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <jvmArguments>--enable-native-access=ALL-UNNAMED</jvmArguments>
+                </configuration>
+            </plugin>
+
+            <!-- Fetch pdfium, build the Rust pdf-render cdylib and stage the native slots. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <id>fetch-pdfium</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${skipNative}</skip>
+                            <executable>${native.crate.dir}/fetch-pdfium.sh</executable>
+                            <arguments>
+                                <argument>${native.platform}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>cargo-build</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${skipNative}</skip>
+                            <executable>cargo</executable>
+                            <workingDirectory>${native.crate.dir}</workingDirectory>
+                            <arguments>
+                                <argument>build</argument>
+                                <argument>--release</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <!-- Stage ${pdf.render.slots} copies of the native libraries onto the classpath. -->
+                    <execution>
+                        <id>stage-native-slots</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>${native.crate.dir}/stage-natives.sh</executable>
+                            <arguments>
+                                <argument>${native.platform}</argument>
+                                <argument>${pdf.render.slots}</argument>
+                                <argument>${native.output.dir}</argument>
+                                <argument>${pdfium.library.dir}</argument>
+                                <argument>${project.build.outputDirectory}/native/${native.platform}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Allow FFM downcalls without warnings, both for `java -jar` and for tests. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>org.projectlombok</groupId>
+                                    <artifactId>lombok</artifactId>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>default-testCompile</id>
+                        <phase>test-compile</phase>
+                        <goals>
+                            <goal>testCompile</goal>
+                        </goals>
+                        <configuration>
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>org.projectlombok</groupId>
+                                    <artifactId>lombok</artifactId>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+          Cross-compilation profiles. Activate explicitly, e.g.
+              ./mvnw package -Pcross-linux-x86_64
+          to *additionally* bundle native/linux-x86_64/slot-* into the jar (the host platform's
+          slots are always built, so tests still run). Requires zig + cargo-zigbuild, see
+          native/pdf-render/build-cross.sh.
+        -->
+        <profile>
+            <id>cross-linux-x86_64</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>cross-build-linux-x86_64</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>${native.crate.dir}/build-cross.sh</executable>
+                                    <arguments>
+                                        <argument>linux-x86_64</argument>
+                                        <argument>${pdf.render.slots}</argument>
+                                        <argument>${project.build.outputDirectory}/native/linux-x86_64</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>cross-linux-aarch64</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>cross-build-linux-aarch64</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>${native.crate.dir}/build-cross.sh</executable>
+                                    <arguments>
+                                        <argument>linux-aarch64</argument>
+                                        <argument>${pdf.render.slots}</argument>
+                                        <argument>${project.build.outputDirectory}/native/linux-aarch64</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>darwin-aarch64</id>
+            <activation>
+                <os><family>mac</family><arch>aarch64</arch></os>
+            </activation>
+            <properties>
+                <native.platform>darwin-aarch64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>darwin-x86_64</id>
+            <activation>
+                <os><family>mac</family><arch>x86_64</arch></os>
+            </activation>
+            <properties>
+                <native.platform>darwin-x86_64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>linux-x86_64</id>
+            <activation>
+                <os><family>unix</family><name>Linux</name><arch>amd64</arch></os>
+            </activation>
+            <properties>
+                <native.platform>linux-x86_64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>linux-aarch64</id>
+            <activation>
+                <os><family>unix</family><name>Linux</name><arch>aarch64</arch></os>
+            </activation>
+            <properties>
+                <native.platform>linux-aarch64</native.platform>
+            </properties>
+        </profile>
+    </profiles>
+
+</project>
